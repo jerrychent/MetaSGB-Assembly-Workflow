@@ -1,2 +1,2 @@
-Description:
-A robust, modular AnADAMA2-based workflow for high-throughput metagenomic assembly, binning, and Species-level Genome Bin (SGB) recovery. Seamlessly processes raw reads to generate highly accurate SGB abundance matrices and GTDB-Tk taxonomy.
+**Description:**
+An automated pipeline for recovering high-quality Species-level Genome Bins (SGBs) from metagenomic data. Integrates KneadData, MetaSPAdes, MetaBAT2, dRep, and CoverM with dynamic resource allocation and bypass capabilities.
