@@ -1,6 +1,6 @@
-﻿# MetaSGB Assembly Workflow
+# MetaSGB Assembly Workflow
 
-An anadama2 workflow for metagenomic SGB/MAG assembly and dereplication. The pipeline assumes all required tools are available from the currently active runtime environment. The KneadData database can be selected per run with `--kneaddata-db`.
+An automated pipeline for recovering high-quality Species-level Genome Bins (SGBs) from metagenomic data. Integrates KneadData, MetaSPAdes, MetaBAT2, dRep, and CoverM with dynamic resource allocation and bypass capabilities.
 
 ## Workflow steps
 
@@ -73,4 +73,7 @@ Key sections:
 - Bowtie2 indexes are tracked with `.done` sentinel files so both normal `.bt2` and large `.bt2l` indexes are supported.
 - Mapping tasks use `set -euo pipefail` so Bowtie2 failures inside pipes propagate correctly.
 - dRep input preparation raises a clear error if no valid bins are found.
+
+
+
 
