@@ -5,14 +5,14 @@ import os
 class ResourceConfig:
     """Load scheduler resources and tool options from resources.cfg."""
 
-    # Defaults keep the workflow runnable when optional config sections are absent.
+    # threads are used by tools; cores are requested from the scheduler.
     DEFAULT_RESOURCES = {
-        "kneaddata": {"cores": 4, "mem": 16000, "partition": None},
-        "assembly": {"cores": 16, "mem": 200000, "partition": None},
-        "binning": {"cores": 16, "mem": 32000, "partition": None},
-        "drep": {"cores": 32, "mem": 128000, "partition": None},
-        "quantification": {"cores": 16, "mem": 64000, "partition": None},
-        "gtdbtk": {"cores": 32, "mem": 450000, "partition": None},
+        "kneaddata": {"threads": 4, "cores": 4, "mem": 16000, "partition": None},
+        "assembly": {"threads": 16, "cores": 16, "mem": 200000, "partition": None},
+        "binning": {"threads": 16, "cores": 16, "mem": 32000, "partition": None},
+        "drep": {"threads": 32, "cores": 32, "mem": 128000, "partition": None},
+        "quantification": {"threads": 16, "cores": 16, "mem": 64000, "partition": None},
+        "phylophlan_sgb": {"threads": 16, "cores": 16, "mem": 64000, "partition": None},
     }
 
     def __init__(self, config_file):
@@ -36,23 +36,29 @@ class ResourceConfig:
         return None
 
     def get_params(self, step_name, fallback_step=None):
-        """Return scheduler params: {'cores': int, 'mem': int, 'partition': str|None}."""
+        """Return tool threads and scheduler resources for one workflow step."""
         section = self._resolve_section(step_name, fallback_step)
         defaults = self.DEFAULT_RESOURCES.get(
             step_name,
-            self.DEFAULT_RESOURCES.get(fallback_step, {"cores": 1, "mem": 4096, "partition": None}),
+            self.DEFAULT_RESOURCES.get(
+                fallback_step,
+                {"threads": 1, "cores": 1, "mem": 4096, "partition": None},
+            ),
         )
 
         if section is None:
             print(f"Warning: Section [{step_name}] not found in config, using defaults.")
             return dict(defaults)
 
+        threads = self.cfg.getint(section, "threads", fallback=defaults["threads"])
+        cores = self.cfg.getint(section, "scheduler_cores", fallback=threads)
         partition = self.cfg.get(section, "partition", fallback=defaults["partition"])
         if isinstance(partition, str):
             partition = partition.strip() or None
 
         return {
-            "cores": self.cfg.getint(section, "threads", fallback=defaults["cores"]),
+            "threads": threads,
+            "cores": cores,
             "mem": self.cfg.getint(section, "memory_mb", fallback=defaults["mem"]),
             "partition": partition,
         }

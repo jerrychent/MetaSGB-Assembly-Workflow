@@ -1,10 +1,9 @@
-﻿import ast
+import ast
 import os
 import shutil
 from pathlib import Path
 
 import pandas as pd
-from anadama2.tracked import TrackedDirectory
 
 
 """Task builders for the MetaSGB assembly workflow."""
@@ -23,6 +22,7 @@ def run_kneaddata(
     suffix_r1="_1.fastq.gz",
     suffix_r2="_2.fastq.gz",
     threads=4,
+    scheduler_cores=None,
     mem_mb=10240,
     partition=None,
     sequencer_source="TruSeq3",
@@ -31,6 +31,7 @@ def run_kneaddata(
     extra_args="",
 ):
     """Create one KneadData task per paired-end sample."""
+    scheduler_cores = scheduler_cores or threads
     clean_files_info = []
     fastqc_flags = " ".join(
         flag
@@ -62,11 +63,11 @@ def run_kneaddata(
             f"/bin/bash -c '"
             f"set -euo pipefail; "
             f"mkdir -p [args[0]]; "
+            f"exec > [args[7]] 2>&1; "
             f"kneaddata --input1 [depends[0]] --input2 [depends[1]] "
             f"--output [args[0]] --output-prefix [args[1]] "
             f"-t [args[2]] -db [args[3]] --bowtie2-options=\"-p [args[2]]\" "
             f"--sequencer-source [args[4]] [args[5]] [args[6]] "
-            f"> [args[7]] 2>&1"
             f"'"
         )
 
@@ -75,7 +76,7 @@ def run_kneaddata(
             depends=[r1, r2],
             targets=[clean_r1, clean_r2],
             args=[sample_out_dir, sample, threads, db_path, sequencer_source, fastqc_flags, extra_args, log_file],
-            cores=threads,
+            cores=scheduler_cores,
             mem=mem_mb,
             partition=partition,
             time=2880,
@@ -86,8 +87,9 @@ def run_kneaddata(
     return clean_files_info
 
 
-def run_assembly(workflow, clean_files_info, output_base_dir, threads=16, mem_mb=200000, partition=None, extra_args=""):
+def run_assembly(workflow, clean_files_info, output_base_dir, threads=16, scheduler_cores=None, mem_mb=200000, partition=None, extra_args=""):
     """Create one metaSPAdes assembly task per sample."""
+    scheduler_cores = scheduler_cores or threads
     assembly_info = []
 
     for sample, r1, r2 in clean_files_info:
@@ -99,9 +101,9 @@ def run_assembly(workflow, clean_files_info, output_base_dir, threads=16, mem_mb
             f"/bin/bash -c '"
             f"set -euo pipefail; "
             f"mkdir -p [args[0]]; "
+            f"exec > [args[4]] 2>&1; "
             f"metaspades.py -1 [depends[0]] -2 [depends[1]] "
             f"-o [args[0]] -t [args[1]] --memory [args[2]] [args[3]] "
-            f"> [args[4]] 2>&1"
             f"'"
         )
 
@@ -110,7 +112,7 @@ def run_assembly(workflow, clean_files_info, output_base_dir, threads=16, mem_mb
             depends=[r1, r2],
             targets=contigs,
             args=[sample_out_dir, threads, int(mem_mb / 1024), extra_args, log_file],
-            cores=threads,
+            cores=scheduler_cores,
             mem=mem_mb,
             partition=partition,
             time=10080,
@@ -127,13 +129,15 @@ def run_binning_workflow(
     clean_files_map,
     output_base_dir,
     threads=16,
+    scheduler_cores=None,
     mem_mb=32000,
     partition=None,
     min_contig=1500,
-    bowtie2_extra_args="",
+    bowtie2_extra_args="--very-sensitive-local",
     metabat_extra_args="",
 ):
     """Create Bowtie2, MetaBAT2, and CheckM tasks for each assembly."""
+    scheduler_cores = scheduler_cores or threads
     all_checkm_stats = []
     dir_binning = os.path.join(output_base_dir, "04_Binning")
     dir_checkm = os.path.join(output_base_dir, "05_Checkm")
@@ -162,14 +166,14 @@ def run_binning_workflow(
             depends=contigs,
             targets=index_done,
             args=[threads, index_base, assembly_dir, log_build],
-            cores=threads,
+            cores=scheduler_cores,
             mem=mem_mb,
             partition=partition,
             time=1440,
             name=f"index_{sample}",
         )
 
-        # Pipefail makes Bowtie2 failures propagate through samtools sort.
+        # Local very-sensitive mapping improves placement for fragmented MAG contigs.
         log_map = os.path.join(assembly_dir, "bowtie2_mapping.log")
         map_mem = max(mem_mb, 32000)
         workflow.add_task_gridable(
@@ -182,7 +186,7 @@ def run_binning_workflow(
             depends=[r1, r2, index_done],
             targets=[sorted_bam, sorted_bam_index],
             args=[threads, index_base, bowtie2_extra_args, log_map],
-            cores=threads,
+            cores=scheduler_cores,
             mem=map_mem,
             partition=partition,
             time=2880,
@@ -193,19 +197,21 @@ def run_binning_workflow(
         depth_file = os.path.join(sample_bin_dir, f"{sample}.depth.txt")
         metabat_done = os.path.join(sample_bin_dir, "metabat.done")
         log_metabat = os.path.join(sample_bin_dir, "metabat.log")
+
         workflow.add_task_gridable(
             f"/bin/bash -c '"
             f"set -euo pipefail; "
             f"mkdir -p [args[0]]; "
+            f"exec > [args[4]] 2>&1; "
             f"jgi_summarize_bam_contig_depths --outputDepth [targets[0]] [depends[0]] && "
             f"metabat2 -i [depends[1]] -a [targets[0]] -o [args[0]]/bin "
             f"-t [args[1]] --minContig [args[2]] [args[3]] && "
             f"touch [targets[1]]"
-            f"' > [args[4]] 2>&1",
+            f"'",
             depends=[sorted_bam, contigs],
             targets=[depth_file, metabat_done],
             args=[sample_bin_dir, threads, min_contig, metabat_extra_args, log_metabat],
-            cores=threads,
+            cores=scheduler_cores,
             mem=mem_mb,
             partition=partition,
             time=1440,
@@ -225,7 +231,7 @@ def run_binning_workflow(
             depends=metabat_done,
             targets=checkm_stats,
             args=[threads, sample_bin_dir, sample_checkm_dir, log_checkm],
-            cores=threads,
+            cores=scheduler_cores,
             mem=checkm_mem,
             partition=partition,
             time=2880,
@@ -293,6 +299,7 @@ def run_drep(
     drep_work_dir,
     binning_base_dir,
     threads=32,
+    scheduler_cores=None,
     mem_mb=200000,
     partition=None,
     completeness=50,
@@ -303,6 +310,7 @@ def run_drep(
     extra_args="",
 ):
     """Create dRep preparation and dereplication tasks."""
+    scheduler_cores = scheduler_cores or threads
     bins_link_dir = os.path.join(drep_work_dir, "all_bins_linked")
     drep_info_csv = os.path.join(drep_work_dir, "checkm2drep.csv")
 
@@ -315,19 +323,28 @@ def run_drep(
     )
 
     drep_out_genomes = os.path.join(drep_work_dir, "dereplicated_genomes")
+    drep_done = os.path.join(drep_work_dir, "drep.done")
     log_drep = os.path.join(drep_work_dir, "drep.log")
     workflow.add_task_gridable(
         f"/bin/bash -c '"
         f"set -euo pipefail; "
-        f"mkdir -p [args[0]]; "
+        f"mkdir -p [args[0]] [args[2]]; "
+        f"for item in [args[0]]/*; do "
+        f"  [ -e \"$item\" ] || continue; "
+        f"  case \"$(basename \"$item\")\" in "
+        f"    all_bins_linked|checkm2drep.csv) continue ;; "
+        f"    *) rm -rf \"$item\" ;; "
+        f"  esac; "
+        f"done; "
         f"dRep dereplicate [args[0]] -p [args[1]] -g [args[2]]/*.fa "
         f"--genomeInfo [depends[0]] --completeness [args[3]] --contamination [args[4]] "
-        f"-sa [args[5]] -nc [args[6]] -pa [args[7]] [args[8]] > [args[9]] 2>&1"
+        f"-sa [args[5]] -nc [args[6]] -pa [args[7]] [args[8]] > [args[9]] 2>&1; "
+        f"touch [targets[0]]"
         f"'",
         depends=drep_info_csv,
-        targets=TrackedDirectory(drep_out_genomes),
+        targets=drep_done,
         args=[drep_work_dir, threads, bins_link_dir, completeness, contamination, secondary_ani, coverage, primary_ani, extra_args, log_drep],
-        cores=threads,
+        cores=scheduler_cores,
         mem=mem_mb,
         partition=partition,
         time=10080,
@@ -343,30 +360,34 @@ def run_quantification(
     clean_files_map,
     output_dir,
     threads=16,
+    scheduler_cores=None,
     mem_mb=64000,
     partition=None,
+    bowtie2_extra_args="--very-sensitive-local",
     coverm_method="relative_abundance",
     coverm_extra_args="",
 ):
     """Create SGB indexing, read mapping, and CoverM abundance tasks."""
+    scheduler_cores = scheduler_cores or threads
     db_dir = os.path.join(output_dir, "database")
     sgb_fasta = os.path.join(db_dir, "SGBs.fna")
     sgb_index_prefix = os.path.join(db_dir, "SGBs_index")
     sgb_index_done = sgb_index_prefix + ".done"
     log_index = os.path.join(db_dir, "bowtie2_build.log")
+    drep_done = os.path.join(os.path.dirname(sgb_dir), "drep.done")
 
     workflow.add_task_gridable(
         f"/bin/bash -c '"
         f"set -euo pipefail; "
         f"mkdir -p [args[0]]; "
-        f"cat [depends[0]]/*.fa > [targets[0]]; "
+        f"cat [args[4]]/*.fa > [targets[0]]; "
         f"bowtie2-build --threads [args[1]] [targets[0]] [args[2]] > [args[3]] 2>&1; "
         f"touch [targets[1]]"
         f"'",
-        depends=TrackedDirectory(sgb_dir),
+        depends=drep_done,
         targets=[sgb_fasta, sgb_index_done],
-        args=[db_dir, threads, sgb_index_prefix, log_index],
-        cores=threads,
+        args=[db_dir, threads, sgb_index_prefix, log_index, sgb_dir],
+        cores=scheduler_cores,
         mem=mem_mb,
         partition=partition,
         time=1440,
@@ -383,14 +404,14 @@ def run_quantification(
             f"/bin/bash -c '"
             f"set -euo pipefail; "
             f"mkdir -p [args[0]]; "
-            f"bowtie2 -p [args[1]] -x [args[2]] -1 [depends[0]] -2 [depends[1]] | "
+            f"exec > [args[3]] 2>&1; "
+            f"bowtie2 -p [args[1]] [args[4]] -x [args[2]] -1 [depends[0]] -2 [depends[1]] | "
             f"samtools sort -@ [args[1]] -o [targets[0]] -; "
-            f"samtools index [targets[0]]"
-            f"' > [args[3]] 2>&1",
+            f"samtools index [targets[0]] '",
             depends=[r1, r2, sgb_index_done],
             targets=[sgb_bam, sgb_bam_index],
-            args=[bam_dir, threads, sgb_index_prefix, log_map],
-            cores=threads,
+            args=[bam_dir, threads, sgb_index_prefix, log_map, bowtie2_extra_args],
+            cores=scheduler_cores,
             mem=mem_mb,
             partition=partition,
             time=2880,
@@ -400,17 +421,18 @@ def run_quantification(
 
     abundance_table = os.path.join(output_dir, "sgb_abundance_matrix.tsv")
     log_coverm = os.path.join(output_dir, "coverm.log")
+    drep_done = os.path.join(os.path.dirname(sgb_dir), "drep.done")
     workflow.add_task_gridable(
         f"/bin/bash -c '"
         f"set -euo pipefail; "
         f"mkdir -p [args[0]]; "
         f"coverm genome -m [args[2]] --bam-files [args[0]]/*.sorted.bam "
-        f"-f [depends[0]]/*.fa -t [args[1]] [args[3]] > [targets[0]] 2> [args[4]]"
+        f"-f [args[5]]/*.fa -t [args[1]] [args[3]] > [targets[0]] 2> [args[4]]"
         f"'",
-        depends=[TrackedDirectory(sgb_dir)] + sgb_bams,
+        depends=[drep_done] + sgb_bams,
         targets=abundance_table,
-        args=[bam_dir, threads, coverm_method, coverm_extra_args, log_coverm],
-        cores=threads,
+        args=[bam_dir, threads, coverm_method, coverm_extra_args, log_coverm, sgb_dir],
+        cores=scheduler_cores,
         mem=mem_mb,
         partition=partition,
         time=1440,
@@ -420,62 +442,48 @@ def run_quantification(
     return abundance_table
 
 
-def run_gtdbtk(
+def run_phylophlan_sgb_assignment(
     workflow,
     sgb_dir,
     output_dir,
-    threads=32,
-    mem_mb=500000,
+    database_folder,
+    database,
+    input_extension=".fa",
+    threads=16,
+    scheduler_cores=None,
+    nproc_io=4,
+    mem_mb=64000,
     partition=None,
-    marker_set="bac120",
-    skip_ani_screen=True,
-    infer_tree=True,
-    infer_mem_mb=128000,
+    clean=False,
     extra_args="",
 ):
-    """Create GTDB-Tk classification and optional tree inference tasks."""
-    gtdb_summary = os.path.join(output_dir, f"gtdbtk.{marker_set}.summary.tsv")
-    msa_file = os.path.join(output_dir, "align", f"gtdbtk.{marker_set}.user_msa.fasta")
-    log_classify = os.path.join(output_dir, "gtdbtk_classify.log")
-    skip_ani_flag = "--skip_ani_screen" if skip_ani_screen else ""
+    """Assign dereplicated SGB representatives to PhyloPhlAn SGBs and taxonomy."""
+    scheduler_cores = scheduler_cores or threads
+    log_file = os.path.join(output_dir, "phylophlan_assign_sgbs.log")
+    done_file = os.path.join(output_dir, "phylophlan_assign_sgbs.done")
+    clean_flag = "--clean" if clean else ""
+    database_arg = f"-d {database}" if database else ""
+    drep_done = os.path.join(os.path.dirname(sgb_dir), "drep.done")
 
     workflow.add_task_gridable(
         f"/bin/bash -c '"
         f"set -euo pipefail; "
         f"mkdir -p [args[0]]; "
-        f"gtdbtk classify_wf --genome_dir [depends[0]] --out_dir [args[0]] "
-        f"--extension fa --cpus [args[1]] [args[2]] [args[3]] > [args[4]] 2>&1"
+        f"phylophlan_assign_sgbs -i [args[1]] -e [args[2]] -o [args[0]] "
+        f"--database_folder [args[3]] [args[4]] --nproc_cpu [args[5]] --nproc_io [args[6]] "
+        f"[args[7]] [args[8]] > [args[9]] 2>&1; "
+        f"touch [targets[0]]"
         f"'",
-        depends=TrackedDirectory(sgb_dir),
-        targets=[gtdb_summary, msa_file],
-        args=[output_dir, threads, skip_ani_flag, extra_args, log_classify],
-        cores=threads,
+        depends=drep_done,
+        targets=done_file,
+        args=[output_dir, sgb_dir, input_extension, database_folder, database_arg, threads, nproc_io, clean_flag, extra_args, log_file],
+        cores=scheduler_cores,
         mem=mem_mb,
         partition=partition,
-        time=10080,
-        name="gtdbtk_classify",
-    )
-
-    if not infer_tree:
-        return gtdb_summary
-
-    tree_out_dir = os.path.join(output_dir, "classify")
-    log_infer = os.path.join(output_dir, "gtdbtk_infer.log")
-    workflow.add_task_gridable(
-        f"/bin/bash -c '"
-        f"set -euo pipefail; "
-        f"mkdir -p [args[0]]; "
-        f"gtdbtk infer --out_dir [args[0]] --cpus [args[1]] --msa_file [depends[0]] > [args[2]] 2>&1"
-        f"'",
-        depends=msa_file,
-        targets=TrackedDirectory(tree_out_dir),
-        args=[tree_out_dir, threads, log_infer],
-        cores=threads,
-        mem=infer_mem_mb,
-        partition=partition,
         time=2880,
-        name="gtdbtk_infer",
+        name="phylophlan_assign_sgbs",
     )
 
-    return gtdb_summary
+    return done_file
+
 

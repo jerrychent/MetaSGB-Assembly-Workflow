@@ -1,6 +1,6 @@
-# MetaSGB Assembly Workflow
+﻿# MetaSGB Assembly Workflow
 
-An automated pipeline for recovering high-quality Species-level Genome Bins (SGBs) from metagenomic data. Integrates KneadData, MetaSPAdes, MetaBAT2, dRep, and CoverM with dynamic resource allocation and bypass capabilities.
+An anadama2 workflow for metagenomic SGB/MAG assembly and dereplication. The pipeline assumes all required tools are available from the currently active runtime environment. The KneadData database can be selected per run with `--kneaddata-db`.
 
 ## Workflow steps
 
@@ -10,7 +10,7 @@ An automated pipeline for recovering high-quality Species-level Genome Bins (SGB
 4. `MetaBAT2/CheckM`: bin contigs and estimate MAG quality.
 5. `dRep`: combine all bins, use CheckM quality metadata, and dereplicate SGB representatives.
 6. `CoverM`: map reads to dereplicated SGBs and produce an abundance matrix.
-7. `GTDB-Tk`: classify SGB representatives and optionally infer a tree.
+7. `PhyloPhlAn`: assign dereplicated SGB representatives to SGBs and taxonomy.
 
 ## Inputs
 
@@ -43,20 +43,20 @@ The command does not expose per-tool environment prefixes. Activate the integrat
 - `--bypass-binning`: use existing `05_Checkm/<sample>/storage/bin_stats_ext.tsv`.
 - `--bypass-drep`: use existing `06_dRep_SGBs/dereplicated_genomes/*.fa`.
 - `--bypass-quant`: skip CoverM abundance calculation.
-- `--bypass-gtdbtk`: skip GTDB-Tk classification and tree inference.
+- `--bypass-phylophlan-sgb`: skip PhyloPhlAn SGB and taxonomy assignment.
 
 ## Resource and tool parameters
 
-All scheduler resources and tunable tool options are configured in `config/resources.cfg`.
+All scheduler resources and tunable tool options are configured in `config/resources.cfg`. `threads` is passed to the tool command, while `scheduler_cores` is requested from Slurm via anadama2. On clusters with a core-to-memory rule, set `scheduler_cores >= max(threads, ceil(memory_mb / 3000))`.
 
 Key sections:
 
-- `[kneaddata]`: `threads`, `memory_mb`, `partition`, `sequencer_source`, FastQC toggles, and `extra_args`.
+- `[kneaddata]`: `threads`, `scheduler_cores`, `memory_mb`, `partition`, `sequencer_source`, FastQC toggles, and `extra_args`.
 - `[assembly]`: MetaSPAdes resources and `extra_args`.
-- `[binning]`: Bowtie2/MetaBAT2 resources, `min_contig`, `bowtie2_extra_args`, and `metabat_extra_args`.
+- `[binning]`: Bowtie2/MetaBAT2 resources, `min_contig`, `bowtie2_extra_args`, and `metabat_extra_args`. The default Bowtie2 setting is `--very-sensitive-local`.
 - `[drep]`: dRep resources and thresholds: `completeness`, `contamination`, `secondary_ani`, `primary_ani`, `coverage`, and `extra_args`.
-- `[quantification]`: CoverM resources, `coverm_method`, and `coverm_extra_args`.
-- `[gtdbtk]`: GTDB-Tk resources, `marker_set`, `skip_ani_screen`, `infer_tree`, `infer_memory_mb`, and `extra_args`.
+- `[quantification]`: CoverM resources, `bowtie2_extra_args`, `coverm_method`, and `coverm_extra_args`.
+- `[phylophlan_sgb]`: PhyloPhlAn resources, `database_folder`, `database`, `input_extension`, `nproc_io`, `clean`, and `extra_args`.
 
 ## Main outputs
 
@@ -66,14 +66,13 @@ Key sections:
 - CheckM stats: `05_Checkm/<sample>/storage/bin_stats_ext.tsv`
 - Dereplicated SGBs: `06_dRep_SGBs/dereplicated_genomes/*.fa`
 - Abundance matrix: `08_Abundance/sgb_abundance_matrix.tsv`
-- GTDB-Tk summary: `07_GTDBTk/gtdbtk.<marker_set>.summary.tsv`
+- PhyloPhlAn assignment: `09_PhyloPhlAn_SGB_Assignment/`
 
 ## Notes
 
+- GTDB-Tk is not used because the integrated environment uses a PhyloPhlAn-compatible dependency set.
 - Bowtie2 indexes are tracked with `.done` sentinel files so both normal `.bt2` and large `.bt2l` indexes are supported.
 - Mapping tasks use `set -euo pipefail` so Bowtie2 failures inside pipes propagate correctly.
+- MetaBAT2 `--minContig` is read from `[binning] min_contig` in `resources.cfg`.
 - dRep input preparation raises a clear error if no valid bins are found.
-
-
-
 
